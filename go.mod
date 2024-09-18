@@ -2,7 +2,10 @@ module github.com/nooooaaaaah/rainbows
 
 go 1.22.3
 
-require github.com/charmbracelet/log v0.4.0
+require (
+	github.com/charmbracelet/log v0.4.0
+	github.com/sixdouglas/suncalc v0.0.0-20230303054245-f8bc8c69d09e
+)
 
 require (
 	github.com/aymanbagabas/go-osc52/v2 v2.0.1 // indirect

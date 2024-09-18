@@ -9,7 +9,7 @@ import (
 	"net/http"
 	"os"
 	"strconv"
-	"strings"
+	"sync"
 	"time"
 
 	"github.com/charmbracelet/log"
@@ -19,12 +19,12 @@ const baseURL = "https://api.weather.gov"
 
 type PointMetadata struct {
 	Properties struct {
-		GridId       string `json:"gridId"`
-		GridX        int    `json:"gridX"`
-		GridY        int    `json:"gridY"`
-		ForecastHref string `json:"forecast"`
-		Forecast     string `json:"forecastHourly"`
-		ForecastZone string `json:"forecastZone"`
+		GridId         string `json:"gridId"`
+		GridX          int    `json:"gridX"`
+		GridY          int    `json:"gridY"`
+		ForecastHref   string `json:"forecast"`
+		ForecastHourly string `json:"forecastHourly"`
+		ForecastZone   string `json:"forecastZone"`
 	} `json:"properties"`
 }
 
@@ -50,9 +50,16 @@ type RainbowPrediction struct {
 	Time       time.Time `json:"time"`
 }
 
+type CacheEntry struct {
+	Data      interface{}
+	ExpiresAt time.Time
+}
+
 var (
 	logger *log.Logger
 	client *http.Client
+	cache  = make(map[string]CacheEntry)
+	mutex  sync.RWMutex
 )
 
 func init() {
@@ -77,6 +84,14 @@ func fetchJSONWithRetry(url string, target interface{}, maxRetries int) error {
 }
 
 func fetchJSON(url string, target interface{}) error {
+	mutex.RLock()
+	if entry, ok := cache[url]; ok && time.Now().Before(entry.ExpiresAt) {
+		mutex.RUnlock()
+		*target.(*interface{}) = entry.Data
+		return nil
+	}
+	mutex.RUnlock()
+
 	logger.Info("Fetching JSON", "url", url)
 	req, err := http.NewRequest("GET", url, nil)
 	if err != nil {
@@ -104,6 +119,13 @@ func fetchJSON(url string, target interface{}) error {
 		return fmt.Errorf("error unmarshalling JSON: %w", err)
 	}
 
+	mutex.Lock()
+	cache[url] = CacheEntry{
+		Data:      target,
+		ExpiresAt: time.Now().Add(15 * time.Minute),
+	}
+	mutex.Unlock()
+
 	return nil
 }
 
@@ -111,30 +133,9 @@ func fetchPointMetadata(lat, lon float64) (PointMetadata, error) {
 	var metadata PointMetadata
 	url := fmt.Sprintf("%s/points/%.4f,%.4f", baseURL, lat, lon)
 
-	req, err := http.NewRequest("GET", url, nil)
-	if err != nil {
-		return PointMetadata{}, fmt.Errorf("error creating request: %w", err)
-	}
-
-	req.Header.Set("User-Agent", "RainbowPredictionApp/1.0 (your@email.com)")
-
-	resp, err := client.Do(req)
+	err := fetchJSONWithRetry(url, &metadata, 3)
 	if err != nil {
 		return PointMetadata{}, fmt.Errorf("error fetching point metadata: %w", err)
-	}
-	defer resp.Body.Close()
-
-	if resp.StatusCode == http.StatusNotFound {
-		return PointMetadata{}, fmt.Errorf("no data available for coordinates: %.4f, %.4f", lat, lon)
-	}
-
-	if resp.StatusCode != http.StatusOK {
-		return PointMetadata{}, fmt.Errorf("unexpected status code: %d", resp.StatusCode)
-	}
-
-	err = json.NewDecoder(resp.Body).Decode(&metadata)
-	if err != nil {
-		return PointMetadata{}, fmt.Errorf("error decoding JSON: %w", err)
 	}
 
 	return metadata, nil
@@ -142,19 +143,26 @@ func fetchPointMetadata(lat, lon float64) (PointMetadata, error) {
 
 func fetchForecast(metadata PointMetadata) (ForecastData, error) {
 	var forecast ForecastData
-	hourlyForecastURL := metadata.Properties.Forecast
-	if hourlyForecastURL == "" {
-		return ForecastData{}, fmt.Errorf("forecast URL not available")
+	forecastURL := metadata.Properties.ForecastHourly
+	if forecastURL == "" {
+		return ForecastData{}, fmt.Errorf("hourly forecast URL not available")
 	}
-	hourlyForecastURL = strings.Replace(hourlyForecastURL, "forecast", "forecast/hourly", 1)
-	err := fetchJSONWithRetry(hourlyForecastURL, &forecast, 3)
+
+	err := fetchJSONWithRetry(forecastURL, &forecast, 3)
 	if err != nil {
 		return ForecastData{}, fmt.Errorf("error fetching hourly forecast: %w", err)
 	}
+
 	return forecast, nil
 }
 
-func predictRainbow(forecast ForecastData, location string) RainbowPrediction {
+func calculateSunAngle(t time.Time, lat, lon float64) float64 {
+	// This is a simplified calculation and should be replaced with a more accurate method
+	hour := float64(t.Hour()) + float64(t.Minute())/60.0
+	return 90 - math.Abs(hour-12)*15
+}
+
+func predictRainbow(forecast ForecastData, lat, lon float64) RainbowPrediction {
 	var bestLikelihood float64
 	var bestTime time.Time
 
@@ -165,41 +173,40 @@ func predictRainbow(forecast ForecastData, location string) RainbowPrediction {
 			continue
 		}
 
-		hour := startTime.Hour()
-		if hour < 6 || hour > 20 {
+		sunAngle := calculateSunAngle(startTime, lat, lon)
+		if sunAngle < 0 || sunAngle > 42 {
 			continue
 		}
 
-		precipProb := period.ProbabilityOfPrecipitation.Value
-		likelihood := precipProb * (100 - precipProb) / 2500
-
-		if period.Temperature <= 32 {
-			likelihood = 0
+		if period.CloudCover > 96 {
+			continue
 		}
 
-		cloudCoverFactor := 1 - math.Abs(float64(period.CloudCover)-50)/50
-		likelihood *= cloudCoverFactor
+		// Check for presence of liquid precipitation
+		hasPrecipitation := period.ProbabilityOfPrecipitation.Value > 0 && period.Temperature > 32
 
-		windSpeed := strings.Split(period.WindSpeed, " ")[0]
-		windSpeedValue, err := strconv.ParseFloat(windSpeed, 64)
-		if err != nil {
-			logger.Error("Error parsing wind speed", "windSpeed", windSpeed, "error", err)
-			windSpeedValue = 0
+		if !hasPrecipitation {
+			continue
 		}
-		windFactor := 1 - math.Abs(windSpeedValue-10)/10
-		if windFactor < 0 {
-			windFactor = 0
-		}
-		likelihood *= windFactor
 
-		if (strings.Contains(strings.ToLower(period.ShortForecast), "rain") || strings.Contains(strings.ToLower(period.ShortForecast), "showers")) &&
-			(period.WindDirection == "E" || period.WindDirection == "NE" || period.WindDirection == "SE") {
+		likelihood := 1.0
+		likelihood *= (100 - float64(period.CloudCover)) / 100
+		likelihood *= period.ProbabilityOfPrecipitation.Value / 100
+
+		// Adjust for optimal sun angle
+		angleFactor := 1 - math.Abs(sunAngle-21)/21
+		likelihood *= angleFactor
+
+		// Give higher weight to predictions between 16:00 and 22:00 local time
+		hour := startTime.Hour()
+		if hour >= 16 && hour <= 22 {
 			likelihood *= 1.5
 		}
 
-		sunAngle := calculateSunAngle(startTime, location)
-		if sunAngle >= 0 && sunAngle <= 42 {
-			likelihood *= 1.5
+		// Seasonal adjustment (simple example - can be refined)
+		month := startTime.Month()
+		if month >= time.April && month <= time.September {
+			likelihood *= 1.2
 		}
 
 		if likelihood > bestLikelihood {
@@ -210,15 +217,9 @@ func predictRainbow(forecast ForecastData, location string) RainbowPrediction {
 
 	return RainbowPrediction{
 		Likelihood: bestLikelihood,
-		Location:   location,
+		Location:   fmt.Sprintf("%.4f, %.4f", lat, lon),
 		Time:       bestTime,
 	}
-}
-
-func calculateSunAngle(t time.Time, location string) float64 {
-	// This is a simplified calculation and should be replaced with a more accurate method
-	hour := float64(t.Hour()) + float64(t.Minute())/60.0
-	return 90 - math.Abs(hour-12)*15
 }
 
 func handlePrediction(w http.ResponseWriter, r *http.Request) {
@@ -253,8 +254,7 @@ func handlePrediction(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	location := fmt.Sprintf("%.4f, %.4f", lat, lon)
-	prediction := predictRainbow(forecast, location)
+	prediction := predictRainbow(forecast, lat, lon)
 
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(prediction)

@@ -17,17 +17,38 @@
                 Colorado Rainbow Prediction App
             </h1>
             <div id="map" class="h-96 w-full mb-6"></div>
+            <div id="legend" class="mb-4 flex justify-center">
+                <div class="flex items-center">
+                    <span class="mr-2">Low</span>
+                    <div
+                        class="w-64 h-4 bg-gradient-to-r from-red-500 via-yellow-500 to-green-500"
+                    ></div>
+                    <span class="ml-2">High</span>
+                </div>
+            </div>
             <div
                 id="predictionResult"
                 class="mb-6 p-4 bg-gray-100 rounded-md hidden"
             ></div>
+            <div class="flex justify-center mb-4">
+                <input
+                    type="datetime-local"
+                    id="datePicker"
+                    class="p-2 border rounded"
+                />
+                <button
+                    id="updateButton"
+                    class="ml-2 bg-blue-500 text-white p-2 rounded"
+                >
+                    Update Prediction
+                </button>
+            </div>
         </div>
         <script>
             var map = L.map("map").setView([39.113014, -105.358887], 7);
             L.tileLayer("https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png", {
                 attribution: "© OpenStreetMap contributors",
             }).addTo(map);
-
             var heatmap = L.layerGroup().addTo(map);
 
             function updateHeatmap() {
@@ -40,7 +61,12 @@
             }
 
             function getPrediction(lat, lon) {
-                fetch("/predict?lat=" + lat + "&lon=" + lon)
+                var date = document.getElementById("datePicker").value;
+                var url = "/predict?lat=" + lat + "&lon=" + lon;
+                if (date) {
+                    url += "&date=" + encodeURIComponent(date);
+                }
+                fetch(url)
                     .then((response) => response.json())
                     .then((data) => {
                         var color = getColor(data.Likelihood);
@@ -64,18 +90,22 @@
             map.on("click", function (e) {
                 var lat = e.latlng.lat;
                 var lon = e.latlng.lng;
-                getPrediction(lat, lon);
                 var resultDiv = document.getElementById("predictionResult");
                 resultDiv.innerHTML = "Fetching prediction...";
                 resultDiv.classList.remove("hidden");
-                fetch("/predict?lat=" + lat + "&lon=" + lon)
+                var date = document.getElementById("datePicker").value;
+                var url = "/predict?lat=" + lat + "&lon=" + lon;
+                if (date) {
+                    url += "&date=" + encodeURIComponent(date);
+                }
+                fetch(url)
                     .then((response) => response.json())
                     .then((data) => {
                         resultDiv.innerHTML = `
-									<h3 class="text-lg font-semibold mb-2">Prediction for ${data.Location}</h3>
-									<p class="mb-1"><strong>Likelihood:</strong> ${(data.Likelihood * 100).toFixed(2)}%</p>
-									<p><strong>Best Time:</strong> ${new Date(data.Time).toLocaleString()}</p>
-								`;
+                        <h3 class="text-lg font-semibold mb-2">Prediction for ${data.Location}</h3>
+                        <p class="mb-1"><strong>Likelihood:</strong> ${(data.Likelihood * 100).toFixed(2)}%</p>
+                        <p><strong>Best Time:</strong> ${new Date(data.Time).toLocaleString()}</p>
+                    `;
                     })
                     .catch((error) => {
                         console.error("Error:", error);
@@ -83,6 +113,15 @@
                             '<p class="text-red-600">Error fetching prediction. Please try again.</p>';
                     });
             });
+
+            document
+                .getElementById("updateButton")
+                .addEventListener("click", updateHeatmap);
+
+            // Set default date to today
+            var today = new Date();
+            var dateString = today.toISOString().slice(0, 16);
+            document.getElementById("datePicker").value = dateString;
 
             updateHeatmap();
         </script>
