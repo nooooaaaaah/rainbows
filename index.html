@@ -1,0 +1,90 @@
+<!doctype html>
+<html lang="en">
+    <head>
+        <meta charset="UTF-8" />
+        <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+        <title>Colorado Rainbow Prediction App</title>
+        <script src="https://cdn.tailwindcss.com"></script>
+        <script src="https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.7.1/leaflet.js"></script>
+        <link
+            rel="stylesheet"
+            href="https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.7.1/leaflet.css"
+        />
+    </head>
+    <body class="bg-gray-100 min-h-screen flex items-center justify-center">
+        <div class="bg-white p-8 rounded-lg shadow-md w-full max-w-4xl">
+            <h1 class="text-3xl font-bold mb-6 text-center text-indigo-600">
+                Colorado Rainbow Prediction App
+            </h1>
+            <div id="map" class="h-96 w-full mb-6"></div>
+            <div
+                id="predictionResult"
+                class="mb-6 p-4 bg-gray-100 rounded-md hidden"
+            ></div>
+        </div>
+        <script>
+            var map = L.map("map").setView([39.113014, -105.358887], 7);
+            L.tileLayer("https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png", {
+                attribution: "© OpenStreetMap contributors",
+            }).addTo(map);
+
+            var heatmap = L.layerGroup().addTo(map);
+
+            function updateHeatmap() {
+                heatmap.clearLayers();
+                for (var lat = 37; lat <= 41; lat += 0.5) {
+                    for (var lon = -109; lon <= -102; lon += 0.5) {
+                        getPrediction(lat, lon);
+                    }
+                }
+            }
+
+            function getPrediction(lat, lon) {
+                fetch("/predict?lat=" + lat + "&lon=" + lon)
+                    .then((response) => response.json())
+                    .then((data) => {
+                        var color = getColor(data.Likelihood);
+                        L.circle([lat, lon], {
+                            color: color,
+                            fillColor: color,
+                            fillOpacity: 0.5,
+                            radius: 20000,
+                        }).addTo(heatmap);
+                    })
+                    .catch((error) => {
+                        console.error("Error:", error);
+                    });
+            }
+
+            function getColor(likelihood) {
+                var hue = likelihood * 120;
+                return "hsl(" + hue + ", 100%, 50%)";
+            }
+
+            map.on("click", function (e) {
+                var lat = e.latlng.lat;
+                var lon = e.latlng.lng;
+                getPrediction(lat, lon);
+                var resultDiv = document.getElementById("predictionResult");
+                resultDiv.innerHTML = "Fetching prediction...";
+                resultDiv.classList.remove("hidden");
+                fetch("/predict?lat=" + lat + "&lon=" + lon)
+                    .then((response) => response.json())
+                    .then((data) => {
+                        resultDiv.innerHTML = `
+									<h3 class="text-lg font-semibold mb-2">Prediction for ${data.Location}</h3>
+									<p class="mb-1"><strong>Likelihood:</strong> ${(data.Likelihood * 100).toFixed(2)}%</p>
+									<p><strong>Best Time:</strong> ${new Date(data.Time).toLocaleString()}</p>
+								`;
+                    })
+                    .catch((error) => {
+                        console.error("Error:", error);
+                        resultDiv.innerHTML =
+                            '<p class="text-red-600">Error fetching prediction. Please try again.</p>';
+                    });
+            });
+
+            updateHeatmap();
+        </script>
+    </body>
+</html>
