@@ -3,127 +3,189 @@
     <head>
         <meta charset="UTF-8" />
         <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-        <title>Colorado Rainbow Prediction App</title>
-        <script src="https://cdn.tailwindcss.com"></script>
-        <script src="https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.7.1/leaflet.js"></script>
+        <title>Rainbow Heatmap</title>
+        <script src="https://unpkg.com/leaflet@1.7.1/dist/leaflet.js"></script>
+        <script src="https://cdnjs.cloudflare.com/ajax/libs/leaflet.heat/0.2.0/leaflet-heat.js"></script>
         <link
             rel="stylesheet"
-            href="https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.7.1/leaflet.css"
+            href="https://unpkg.com/leaflet@1.7.1/dist/leaflet.css"
         />
+        <style>
+            body {
+                margin: 0;
+                padding: 0;
+            }
+            #map {
+                position: absolute;
+                top: 0;
+                bottom: 0;
+                width: 100%;
+            }
+            #info {
+                position: absolute;
+                top: 10px;
+                left: 50px;
+                z-index: 1000;
+                background: white;
+                padding: 10px;
+                border-radius: 5px;
+                box-shadow: 0 0 10px rgba(0, 0, 0, 0.1);
+            }
+            .legend {
+                line-height: 18px;
+                color: #555;
+                background: white;
+                padding: 10px;
+                border-radius: 5px;
+                box-shadow: 0 0 10px rgba(0, 0, 0, 0.1);
+            }
+            .legend i {
+                width: 18px;
+                height: 18px;
+                float: left;
+                margin-right: 8px;
+                opacity: 0.7;
+            }
+            #error-message {
+                position: absolute;
+                top: 10px;
+                right: 10px;
+                z-index: 1000;
+                background: #ff6b6b;
+                color: white;
+                padding: 10px;
+                border-radius: 5px;
+                display: none;
+            }
+        </style>
     </head>
-    <body class="bg-gray-100 min-h-screen flex items-center justify-center">
-        <div class="bg-white p-8 rounded-lg shadow-md w-full max-w-4xl">
-            <h1 class="text-3xl font-bold mb-6 text-center text-indigo-600">
-                Colorado Rainbow Prediction App
-            </h1>
-            <div id="map" class="h-96 w-full mb-6"></div>
-            <div id="legend" class="mb-4 flex justify-center">
-                <div class="flex items-center">
-                    <span class="mr-2">Low</span>
-                    <div
-                        class="w-64 h-4 bg-gradient-to-r from-red-500 via-yellow-500 to-green-500"
-                    ></div>
-                    <span class="ml-2">High</span>
-                </div>
-            </div>
-            <div
-                id="predictionResult"
-                class="mb-6 p-4 bg-gray-100 rounded-md hidden"
-            ></div>
-            <div class="flex justify-center mb-4">
-                <input
-                    type="datetime-local"
-                    id="datePicker"
-                    class="p-2 border rounded"
-                />
-                <button
-                    id="updateButton"
-                    class="ml-2 bg-blue-500 text-white p-2 rounded"
-                >
-                    Update Prediction
-                </button>
-            </div>
-        </div>
+    <body>
+        <div id="info">Click on the map to see rainbow likelihood</div>
+        <div id="error-message"></div>
+        <div id="map"></div>
         <script>
-            var map = L.map("map").setView([39.113014, -105.358887], 7);
-            L.tileLayer("https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png", {
-                attribution: "© OpenStreetMap contributors",
-            }).addTo(map);
-            var heatmap = L.layerGroup().addTo(map);
+            var map = L.map("map").setView([0, 0], 2);
+            var heatLayer;
+            var marker;
 
-            function updateHeatmap() {
-                heatmap.clearLayers();
-                for (var lat = 37; lat <= 41; lat += 0.5) {
-                    for (var lon = -109; lon <= -102; lon += 0.5) {
-                        getPrediction(lat, lon);
-                    }
-                }
+            L.tileLayer("https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png", {
+                attribution:
+                    '&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> contributors',
+            }).addTo(map);
+
+            function getColor(value) {
+                return value > 0.8
+                    ? "#FF0000"
+                    : value > 0.6
+                      ? "#FF7F00"
+                      : value > 0.4
+                        ? "#FFFF00"
+                        : value > 0.2
+                          ? "#00FF00"
+                          : value > 0
+                            ? "#0000FF"
+                            : "#D3D3D3";
             }
 
-            function getPrediction(lat, lon) {
-                var date = document.getElementById("datePicker").value;
-                var url = "/predict?lat=" + lat + "&lon=" + lon;
-                if (date) {
-                    url += "&date=" + encodeURIComponent(date);
-                }
+            function showError(message) {
+                var errorDiv = document.getElementById("error-message");
+                errorDiv.textContent = message;
+                errorDiv.style.display = "block";
+                setTimeout(() => {
+                    errorDiv.style.display = "none";
+                }, 5000);
+            }
+
+            function fetchHeatmapData(lat, lon) {
+                var url = `/heatmap?lat=${lat}&lon=${lon}&radius=20&resolution=0.05`;
+
                 fetch(url)
-                    .then((response) => response.json())
+                    .then((response) => {
+                        if (!response.ok) {
+                            throw new Error(
+                                `HTTP error! status: ${response.status}`,
+                            );
+                        }
+                        return response.json();
+                    })
                     .then((data) => {
-                        var color = getColor(data.Likelihood);
-                        L.circle([lat, lon], {
-                            color: color,
-                            fillColor: color,
-                            fillOpacity: 0.5,
-                            radius: 20000,
-                        }).addTo(heatmap);
+                        if (!Array.isArray(data) || data.length === 0) {
+                            throw new Error(
+                                "Invalid data received from server",
+                            );
+                        }
+                        var heatData = data.map((point) => [
+                            point.lat,
+                            point.lon,
+                            point.likelihood,
+                        ]);
+                        if (heatLayer) {
+                            map.removeLayer(heatLayer);
+                        }
+                        heatLayer = L.heatLayer(heatData, {
+                            radius: 25,
+                            blur: 15,
+                            maxZoom: 17,
+                            gradient: {
+                                0: "#D3D3D3",
+                                0.1: "#0000FF",
+                                0.3: "#00FF00",
+                                0.5: "#FFFF00",
+                                0.7: "#FF7F00",
+                                0.9: "#FF0000",
+                            },
+                        }).addTo(map);
                     })
                     .catch((error) => {
-                        console.error("Error:", error);
+                        console.error("Error fetching heatmap data:", error);
+                        showError(
+                            "Error fetching heatmap data. Please try again.",
+                        );
                     });
-            }
-
-            function getColor(likelihood) {
-                var hue = likelihood * 120;
-                return "hsl(" + hue + ", 100%, 50%)";
             }
 
             map.on("click", function (e) {
                 var lat = e.latlng.lat;
                 var lon = e.latlng.lng;
-                var resultDiv = document.getElementById("predictionResult");
-                resultDiv.innerHTML = "Fetching prediction...";
-                resultDiv.classList.remove("hidden");
-                var date = document.getElementById("datePicker").value;
-                var url = "/predict?lat=" + lat + "&lon=" + lon;
-                if (date) {
-                    url += "&date=" + encodeURIComponent(date);
+
+                if (marker) {
+                    map.removeLayer(marker);
                 }
-                fetch(url)
-                    .then((response) => response.json())
-                    .then((data) => {
-                        resultDiv.innerHTML = `
-                        <h3 class="text-lg font-semibold mb-2">Prediction for ${data.Location}</h3>
-                        <p class="mb-1"><strong>Likelihood:</strong> ${(data.Likelihood * 100).toFixed(2)}%</p>
-                        <p><strong>Best Time:</strong> ${new Date(data.Time).toLocaleString()}</p>
-                    `;
-                    })
-                    .catch((error) => {
-                        console.error("Error:", error);
-                        resultDiv.innerHTML =
-                            '<p class="text-red-600">Error fetching prediction. Please try again.</p>';
-                    });
+                marker = L.marker([lat, lon]).addTo(map);
+
+                map.setView([lat, lon], 10);
+                fetchHeatmapData(lat, lon);
             });
 
-            document
-                .getElementById("updateButton")
-                .addEventListener("click", updateHeatmap);
+            var legend = L.control({ position: "bottomright" });
 
-            // Set default date to today
-            var today = new Date();
-            var dateString = today.toISOString().slice(0, 16);
-            document.getElementById("datePicker").value = dateString;
+            legend.onAdd = function (map) {
+                var div = L.DomUtil.create("div", "info legend"),
+                    grades = [0, 0.2, 0.4, 0.6, 0.8],
+                    labels = [
+                        "Not suitable",
+                        "Very Low",
+                        "Low",
+                        "Medium",
+                        "High",
+                        "Very High",
+                    ];
 
-            updateHeatmap();
+                for (var i = 0; i < grades.length; i++) {
+                    div.innerHTML +=
+                        '<i style="background:' +
+                        getColor(grades[i] + 0.1) +
+                        '"></i> ' +
+                        labels[i] +
+                        (grades[i + 1]
+                            ? "&ndash;" + labels[i + 1] + "<br>"
+                            : "+");
+                }
+
+                return div;
+            };
+
+            legend.addTo(map);
         </script>
     </body>
 </html>

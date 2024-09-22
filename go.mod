@@ -4,7 +4,7 @@ go 1.22.3
 
 require (
 	github.com/charmbracelet/log v0.4.0
-	github.com/sixdouglas/suncalc v0.0.0-20230303054245-f8bc8c69d09e
+	github.com/gorilla/mux v1.8.1
 )
 
 require (
